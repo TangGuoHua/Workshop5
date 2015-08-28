@@ -1,0 +1,357 @@
+C51 COMPILER V9.00   NRF24L01                                                              08/26/2015 19:02:42 PAGE 1   
+
+
+C51 COMPILER V9.00, COMPILATION OF MODULE NRF24L01
+OBJECT MODULE PLACED IN .\obj\nrf24L01.obj
+COMPILER INVOKED BY: D:\MCU\Keil_uVision4\C51\BIN\C51.EXE source\nrf24L01.c BROWSE DEBUG OBJECTEXTEND PRINT(.\nrf24L01.l
+                    -st) OBJECT(.\obj\nrf24L01.obj)
+
+line level    source
+
+   1          /***************************************************************************
+   2          【修改历史】
+   3          
+   4          日期            作者    备注
+   5          ----------------------------------------------------------------------
+   6          2013年10月01日  黄长浩  初始版本
+   7          2014年10月01日  黄长浩  修改nrfSendData()函数以支持地址宽度设置和发送失败后重试Retry
+   8                                  修改nrfSetRxMode()函数以支持地址宽度设置
+   9          
+  10          【版权声明】
+  11          Copyright(C) All Rights Reserved by Changhao Huang (HuangChangHao@gmail.com)
+  12          版权所有者：黄长浩 HuangChangHao@gmail.com
+  13          
+  14          未经作者书面授权，不可以将本程序此程序用于任何商业目的。
+  15          用于学习与参考目的，请在引用处注明版权和作者信息。
+  16          ****************************************************************************/
+  17          
+  18          #include <reg52.h>
+  19          #include "nrf24L01.h"
+  20          #include "nrf24L01Node.h"
+  21          
+  22          #define SEND_MAX_RETRY 5  //发送数据时，如果失败，最大重试次数 (值可以为 0至9）
+  23          
+  24          unsigned char nrfACK();
+  25          unsigned char nrfCheckACK();
+  26          unsigned char nrfSPI( unsigned char spiData );
+  27          
+  28          unsigned char nrfReadReg(  unsigned char regAddr );
+  29          unsigned char nrfWriteReg( unsigned char regAddr, unsigned char writeData);
+  30          unsigned char nrfReadRxData( unsigned char regAddr, unsigned char *rxData, unsigned char dataLen);
+  31          unsigned char nrfWriteTxData(unsigned char regAddr, unsigned char *txData, unsigned char dataLen);
+  32          
+  33          /****************************************************
+  34          函数功能:延时 15us
+  35          *****************************************************/
+  36          void delayFor24L01( )
+  37          {
+  38   1              unsigned int i;
+  39   1              unsigned int t;
+  40   1              for( t=1; t>0; t-- )
+  41   1                      for( i=305; i>0; i-- ); // 1T STC11F04E 外部晶振4MHz
+  42   1      }
+  43          
+  44          
+  45          //********* 以下函数仅供本模块内部调用 **************
+  46          //SPI时序函数
+  47          unsigned char nrfSPI( unsigned char spiData )
+  48          {
+  49   1              unsigned char i;
+  50   1              for(i=0;i<8;i++) //循环8次
+  51   1              {
+  52   2                      if( spiData & 0x80 )
+  53   2                              MOSI=1;
+  54   2                      else
+C51 COMPILER V9.00   NRF24L01                                                              08/26/2015 19:02:42 PAGE 2   
+
+  55   2                              MOSI=0; //byte最高位输出到MOSI
+  56   2                      spiData<<=1; //低一位移位到最高位
+  57   2                      SCLK=1; 
+  58   2                      if(MISO) //拉高SCK，nRF24L01从MOSI读入1位数据，同时从MISO输出1位数据
+  59   2                              spiData|=0x01; //读MISO到byte最低位
+  60   2                      SCLK=0; //SCK置低
+  61   2              }
+  62   1              return(spiData); //返回读出的一字节
+  63   1      }
+  64          
+  65          //SPI读寄存器一字节函数
+  66          unsigned char nrfReadReg( unsigned char regAddr )
+  67          {
+  68   1              unsigned char returnData;
+  69   1              CSN=0;//启动时序
+  70   1              nrfSPI( regAddr );//写寄存器地址
+  71   1              returnData=nrfSPI(0x00);//写入读寄存器指令  
+  72   1              CSN=1;
+  73   1              return( returnData ); //返回状态
+  74   1      }
+  75          
+  76          //SPI写寄存器一字节函数
+  77          unsigned char nrfWriteReg( unsigned char regAddr, unsigned char writeData )
+  78          {
+  79   1              unsigned char returnData;
+  80   1              CSN=0;//启动时序
+  81   1              returnData=nrfSPI(regAddr);//写入地址
+  82   1              nrfSPI(writeData);//写入值
+  83   1              CSN=1;
+  84   1              return(returnData);
+  85   1      }
+  86          
+  87          //SPI读取RXFIFO寄存器的值
+  88          unsigned char nrfReadRxData( unsigned char regAddr, unsigned char *rxData, unsigned char dataLen )
+  89          {  //寄存器地址//读取数据存放变量//读取数据长度//用于接收
+  90   1              unsigned char returnData,i;
+  91   1              CSN=0;//启动时序
+  92   1              returnData=nrfSPI(regAddr);//写入要读取的寄存器地址
+  93   1              for(i=0;i<dataLen;i++) //读取数据
+  94   1              {
+  95   2                      rxData[i]=nrfSPI(0);
+  96   2              } 
+  97   1              CSN=1;
+  98   1              return(returnData); 
+  99   1      }
+ 100          
+ 101          
+ 102          //SPI写入TXFIFO寄存器的值
+ 103          unsigned char nrfWriteTxData( unsigned char regAddr, unsigned char *txData, unsigned char dataLen )
+ 104          { //寄存器地址//写入数据存放变量//读取数据长度//用于发送
+ 105   1              unsigned char returnData,i;
+ 106   1              CSN=0;
+ 107   1              returnData=nrfSPI(regAddr);//写入要写入寄存器的地址
+ 108   1              for(i=0;i<dataLen;i++)//写入数据
+ 109   1              {
+ 110   2                      nrfSPI(*txData++);
+ 111   2              }
+ 112   1              CSN=1;
+ 113   1              return(returnData);
+ 114   1      }
+ 115          
+ 116          
+C51 COMPILER V9.00   NRF24L01                                                              08/26/2015 19:02:42 PAGE 3   
+
+ 117          
+ 118          //******* 以下函数供外部模块调用 ************
+ 119          
+ 120          //NRF24L01初始化函数
+ 121          void nrf24L01Init()
+ 122          {
+ 123   1              delayFor24L01();//让系统什么都不干
+ 124   1              delayFor24L01();//让系统什么都不干
+ 125   1              CE=0; //待机模式1 (Standy-I)
+ 126   1              CSN=1;
+ 127   1              SCLK=0;
+ 128   1              IRQ=1;
+ 129   1              
+ 130   1              /***下面这些寄存器的配置，在这个程序运行期间不变化，故在初始化芯片时配置。***/
+ 131   1              nrfWriteReg( W_REGISTER+EN_AA, 0x01 );     // 使能接收通道0自动应答
+ 132   1              nrfWriteReg( W_REGISTER+EN_RXADDR, 0x01 ); // 使能接收通道0
+ 133   1      
+ 134   1              //nrfWriteReg( W_REGISTER+SETUP_AW, 0x03 ); // Set up address width to 5 bytes
+ 135   1              //nrfWriteReg( W_REGISTER+SETUP_RETR,0x1f ); // 自动重发延时等待500us，自动重发15次
+ 136   1              //nrfWriteReg( W_REGISTER+SETUP_RETR,0x3f ); // 自动重发延时等待1000us，自动重发15次
+ 137   1              //nrfWriteReg( W_REGISTER+SETUP_RETR,0x5f ); // 自动重发延时等待1500us，自动重发15次
+ 138   1              nrfWriteReg( W_REGISTER+SETUP_RETR,0x7f ); // 自动重发延时等待2000us，自动重发15次
+ 139   1              //nrfWriteReg( W_REGISTER+SETUP_RETR,0xbf ); // 自动重发延时等待3000us，自动重发15次
+ 140   1              //nrfWriteReg( W_REGISTER+SETUP_RETR,0xff ); // 自动重发延时等待4000us，自动重发15次
+ 141   1      
+ 142   1              nrfWriteReg( W_REGISTER+RF_SETUP, 0x26 ); // 数据传输率250Kbps，发射功率0dBm
+ 143   1              nrfWriteReg( W_REGISTER+STATUS, 0x7e ); //清除RX_DR,TX_DS,MAX_RT状态位
+ 144   1              nrfWriteReg( W_REGISTER+CONFIG, 0x7e ); //屏蔽3个中断，CRC使能，2字节CRC校验，上电，PTX
+ 145   1      }
+ 146          
+ 147          
+ 148          // 将24L01设置为发送模式PTX，并发送数据
+ 149          // 参数如下：
+ 150          // rfChannel: 无线电频道  取值范围是0-125（即，0x00到0x7d）
+ 151          // addrWidth: 发送地址宽度
+ 152          // txAddr: 发送的地址（接收方地址）
+ 153          // dataWidth: 发送数据的宽度
+ 154          // txData: 发送的数据
+ 155          // 例子：
+ 156          // unsigned char rfChannel = 0x64; //选择无线电频道
+ 157          // unsigned char rec_addr[3]= { 0x54, 0x53, 0x95 };  //接收方地址
+ 158          // unsigned char data_to_send[5] = {0x01, 0x02, 0x03, 0x04, 0x05 };　//要发送的数据
+ 159          // nrfSendData( rfChannel, 3, rec_addr, 5, data_to_send );  //发送
+ 160          //
+ 161          // 返回值：
+ 162          // 255-表示大重试次数达到后仍然未收到ACK，发送失败
+ 163          // 0到159的一个值，表示发送完成且成功。返回值是自动重传(auto retransmit)的次数，例如：
+ 164          //     返回0：没有re-transmit，直接发送成功
+ 165          //     返回1: 表示芯片re-transmit 1次成功
+ 166          //     返回2：表示芯片re-transmit 2次成功
+ 167          //     以此类推，最多re-transmit 159次成功。(SEND_MAX_RETRY最大可以设为9）
+ 168          unsigned char nrfSendData( unsigned char rfChannel, unsigned char addrWidth, unsigned char *txAddr, unsign
+             -ed char dataWidth, unsigned char *txData )
+ 169          {
+ 170   1              unsigned char ret = 0;
+ 171   1              unsigned char retryCnt = 0;
+ 172   1              
+ 173   1              CE=0;
+ 174   1              
+ 175   1              nrfWriteReg( W_REGISTER+SETUP_AW, addrWidth-2 ); //设置地址宽度
+ 176   1              nrfWriteTxData( W_REGISTER+TX_ADDR, txAddr, addrWidth );//写寄存器指令+接收地址使能指令+接收地址+地址宽度
+ 177   1              nrfWriteTxData( W_REGISTER+RX_ADDR_P0, txAddr,addrWidth );//为了应答接收设备，接收通道0地址和发送地址相同
+C51 COMPILER V9.00   NRF24L01                                                              08/26/2015 19:02:42 PAGE 4   
+
+ 178   1               
+ 179   1      
+ 180   1              nrfWriteReg( W_REGISTER+RF_CH, rfChannel ); // 选择射频通道
+ 181   1              nrfWriteReg( W_REGISTER+CONFIG,0x7e ); //屏蔽3个中断，CRC使能，2字节CRC校验，上电，PTX
+ 182   1              //nrfWriteReg( W_REGISTER+STATUS, 0x7f ); // 清除RX_DR,TX_DS,MAX_RT标志
+ 183   1              
+ 184   1              for( retryCnt=0; retryCnt<= SEND_MAX_RETRY; retryCnt++ )
+ 185   1              {
+ 186   2                      nrfWriteTxData( W_TX_PAYLOAD, txData, dataWidth );//写入要发送的数据
+ 187   2                      
+ 188   2                      CE=1;
+ 189   2                      delayFor24L01();
+ 190   2                      CE=0; //待发送完毕后转为Standby-1模式
+ 191   2              
+ 192   2                      do
+ 193   2                      {
+ 194   3                              ret=nrfCheckACK();
+ 195   3                      }while( ret==100);//检测是否发送完毕
+ 196   2                      
+ 197   2                      //如果返回值小于等于15，说明本次数据传送成功
+ 198   2                      if( ret<=15 ) 
+ 199   2                      {
+ 200   3                              //计算函数返回值，即Retransmission的次数
+ 201   3                              //一次性发送成功，返回0，即没有重传(re-transmission)
+ 202   3                              //retry第1次时，一次性发送成功，则retransit 16次 （之前15次加本次）
+ 203   3                              //一次类推，
+ 204   3                              //retry第9次时，（加开始retry之前的一次，共发射了10次），retransmit 15次成功，则，总共retransmit了16*9+
+             -15=159次
+ 205   3                              //每次try是transmit 16次 （本身1次，加15次retransmit）
+ 206   3                              ret += (16*retryCnt);
+ 207   3                              break;
+ 208   3                      }
+ 209   2              }
+ 210   1              
+ 211   1              return ret;
+ 212   1      }
+ 213          
+ 214          
+ 215          //设置24L01为接收模式PRX，准备接收数据
+ 216          //参数如下：
+ 217          //rfChannel：接收的频道号。取值范围是0－125
+ 218          //addrWidth: 地址宽度（3-5字节）
+ 219          //rxAddr：本节点接收的地址
+ 220          //本节点的接收数据宽度在"nrf24L01Node.h"头文件里面设置
+ 221          //例：
+ 222          //   unsigned char myAddr[3] = {53, 69, 160};
+ 223          //   nrfSetRxMode( 76, 3, myAddr);
+ 224          //那么节点将在76频道上接收数据。地址宽度为3字节，地址是：53/69/160。
+ 225          //一旦接收到数据，将触发INT0 (硬件接线提示：IRQ需连接到INT0上）
+ 226          void nrfSetRxMode(  unsigned char rfChannel, unsigned char addrWidth, unsigned char *rxAddr)
+ 227          {
+ 228   1          CE=0;
+ 229   1      
+ 230   1              nrfWriteReg( W_REGISTER+SETUP_AW, addrWidth-2 ); //设置地址宽度
+ 231   1              nrfWriteTxData( W_REGISTER+RX_ADDR_P0, rxAddr, addrWidth ); //接收设备接收通道0使用和发送设备相同的发送
+             -地址
+ 232   1      
+ 233   1              nrfWriteReg( W_REGISTER+RF_CH, rfChannel ); //设置射频通道
+ 234   1              nrfWriteReg( W_REGISTER+RX_PW_P0, RECEIVE_DATA_WIDTH ); //接收通道0选择和发送通道相同有效数据宽度
+ 235   1      
+ 236   1              //nrfWriteReg( W_REGISTER+RF_SETUP, 0x26 ); // 数据传输率250Kbps，发射功率0dBm
+ 237   1              //nrfWriteReg( W_REGISTER+RF_SETUP, 0x27 ); // 数据传输率250Kbps，发射功率0dBm, LNA_HCURR (Low Noise Ampl
+C51 COMPILER V9.00   NRF24L01                                                              08/26/2015 19:02:42 PAGE 5   
+
+             -ifier, High Current?)
+ 238   1              //nrfWriteReg( W_REGISTER+RF_SETUP,0x21 ); // 数据传输率250Kbps，发射功率-18dBm, LNA_HCURR (Low Noise Amp
+             -lifier, High Current?)
+ 239   1      
+ 240   1              nrfWriteReg( W_REGISTER+CONFIG, 0x3f ); //使能RX_DR中断，屏蔽TX_DS和MAX_RT中断，CRC使能，2字节CRC校验，上
+             -电，接收模式
+ 241   1      
+ 242   1      
+ 243   1              CE = 1; //设为接收模式 PRX
+ 244   1      }
+ 245          
+ 246          
+ 247          // 用于检查发送结果(Ack)
+ 248          // 返回值：100-表示还在发送中
+ 249          //         255-表示大重发次数达到后仍然未收到ACK，发送失败
+ 250          //         0到15的一个值，表示发送完成且成功。返回值是自动重发的次数，例如：
+ 251          //           0：没有重发，直接发送成功
+ 252          //           1: 重发了1次后成功收到ack
+ 253          //           2: 重发了2次后成功收到ack
+ 254          //           以此类推
+ 255          //           最大值是SETUP_RETR这个寄存器里面设置的最大重发次数。（不会超过15）
+ 256          unsigned char nrfCheckACK()
+ 257          {  
+ 258   1              unsigned char status;
+ 259   1              
+ 260   1              status = nrfReadReg(R_REGISTER+STATUS); // 读取状态寄存器
+ 261   1              
+ 262   1              if( status & 0x20 ) //检查TX_DS位，置位则发送成功
+ 263   1              {
+ 264   2                      nrfWriteReg(W_REGISTER+STATUS,0x7f);  // 清除TX_DS标志
+ 265   2                      
+ 266   2                      //发送成功后，FIFO自动清空，这里就不用再清了
+ 267   2                      
+ 268   2                      //返回自动重发次数
+ 269   2                      return( nrfReadReg(R_REGISTER+OBSERVE_TX) & 0x0f ); 
+ 270   2              }
+ 271   1              else if( status & 0x10) //检查MAX_RT位，置位则说明最大重发次数达到后仍然未收到ACK，发送失败
+ 272   1              {
+ 273   2                      nrfWriteReg(W_REGISTER+STATUS,0x7f);  // 清除MAX_RT标志
+ 274   2                      
+ 275   2                      //发送失败，FIFO不会自动清空，必须手动清空 ！！
+ 276   2                      //关键！！不然会出现意想不到的后果！！！
+ 277   2                      CSN=0;
+ 278   2                      nrfSPI(FLUSH_TX);
+ 279   2                      CSN=1; 
+ 280   2                              
+ 281   2                      return 255;
+ 282   2              }
+ 283   1              else //还在发送中...
+ 284   1              {
+ 285   2                      return 100;
+ 286   2              }
+ 287   1      }
+ 288          
+ 289          //获取24L01接收到的数据。
+ 290          //当24L01收到数据触发中断后，调用本方法来取得24L01收到的数据
+ 291          unsigned char* nrfGetReceivedData()                              
+ 292          {
+ 293   1              static unsigned char dataBuffer[RECEIVE_DATA_WIDTH];
+ 294   1              unsigned char status;
+ 295   1              
+ 296   1              //读取状态寄存器
+C51 COMPILER V9.00   NRF24L01                                                              08/26/2015 19:02:42 PAGE 6   
+
+ 297   1              status = nrfReadReg(R_REGISTER+STATUS);
+ 298   1              if( status & 0x40 ) //检查RX_DR位，如果置位，则说明接收到数据
+ 299   1              {
+ 300   2                      //CE=0;//进入Standby-I模式
+ 301   2                      
+ 302   2                      // 从RX FIFO读取数据
+ 303   2                      nrfReadRxData(R_RX_PAYLOAD,dataBuffer,RECEIVE_DATA_WIDTH);
+ 304   2                      
+ 305   2                      //接收到数据后RX_DR,TX_DS,MAX_PT都置高为1，通过写1来清除中断标
+ 306   2                      //nrfWriteReg(W_REGISTER+STATUS,0xff);
+ 307   2                      //网上找到的例子是用0xff来清中断标志，我通过试验发现用0x40也可以清掉RX_DR
+ 308   2                      nrfWriteReg(W_REGISTER+STATUS,0x40);
+ 309   2                      
+ 310   2                      //用于清空FIFO ！！关键！！不然会出现意想不到的后果！！！大家记住！！
+ 311   2                      //我经过试验发现，不清FIFO的话，发送方有时候会出现收不到ACK的现象
+ 312   2                      CSN=0;
+ 313   2                      nrfSPI(FLUSH_RX); 
+ 314   2                      CSN=1;
+ 315   2              }
+ 316   1              return dataBuffer;
+ 317   1      } 
+
+
+MODULE INFORMATION:   STATIC OVERLAYABLE
+   CODE SIZE        =    521    ----
+   CONSTANT SIZE    =   ----    ----
+   XDATA SIZE       =   ----    ----
+   PDATA SIZE       =   ----    ----
+   DATA SIZE        =     16      23
+   IDATA SIZE       =   ----    ----
+   BIT SIZE         =   ----    ----
+END OF MODULE INFORMATION.
+
+
+C51 COMPILATION COMPLETE.  0 WARNING(S),  0 ERROR(S)

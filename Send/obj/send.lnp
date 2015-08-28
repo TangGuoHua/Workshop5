@@ -1,0 +1,4 @@
+".\obj\main.obj",
+".\obj\nrf24L01.obj" 
+TO ".\obj\send" 
+PRINT(".\send.m51") RAMSIZE(256) 

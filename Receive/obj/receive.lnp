@@ -1,0 +1,4 @@
+".\obj\nrf24L01.obj",
+".\obj\main.obj" 
+TO ".\obj\receive" 
+PRINT(".\receive.m51") RAMSIZE(256) 
